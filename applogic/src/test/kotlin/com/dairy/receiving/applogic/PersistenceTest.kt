@@ -11,9 +11,9 @@ import org.junit.jupiter.api.Test
 
 class PersistenceTest {
 
-    /** 全部五个异常场景：保存->JSON->恢复后，缺陷与建议必须完全一致。 */
+    /** 全部异常场景（含卸奶管线见证）：保存->JSON->恢复后，缺陷与建议必须完全一致。 */
     @Test
-    fun `五场景离线快照往返后判定一致`() {
+    fun `全场景离线快照往返后判定一致`() {
         val store = InMemoryTripStore()
         for ((name, factory) in DemoScenarios.all()) {
             val wf = factory()
@@ -49,12 +49,26 @@ class PersistenceTest {
         assertEquals(Recommendation.ACCEPT_WITH_NOTE, restored.recommendation(code))
         // 恢复后续操作，审计序号连续
         val seqBefore = restored.events.last().seq
-        // 开阀硬前置：先声明独立卸奶边界，再登记人工开阀
+        // 开阀硬前置：先声明独立卸奶边界，再见证管线连接，最后登记人工开阀
         restored.declareUnload(com.dairy.receiving.core.model.UnloadDeclaration(
             "g-2", listOf(code), com.dairy.receiving.core.model.UnloadBoundary.SEPARATE,
             com.dairy.receiving.core.model.TankId("T-1"), null,
             com.dairy.receiving.core.model.OperatorId("recv-07"),
             java.time.Instant.now(java.time.Clock.systemUTC())))
+        val now = java.time.Instant.now(java.time.Clock.systemUTC())
+        restored.recordPipelineConnection(
+            "g-2",
+            com.dairy.receiving.core.model.PipelineId("P-1"),
+            com.dairy.receiving.core.model.HoseId("H-1"),
+            com.dairy.receiving.core.model.CleaningAcceptance(
+                com.dairy.receiving.core.model.PipelineId("P-1"), "CIP",
+                com.dairy.receiving.core.model.OperatorId("recv-07"),
+                now.minusSeconds(3600), now.plusSeconds(7200)),
+            com.dairy.receiving.core.model.FlushRecord(
+                com.dairy.receiving.core.model.FlushDestination.RECLAIM,
+                20.0, false,
+                com.dairy.receiving.core.model.OperatorId("recv-07"), now),
+            by = com.dairy.receiving.core.model.OperatorId("recv-07"))
         restored.confirmValveOpened(code, com.dairy.receiving.core.model.OperatorId("recv-07"))
         assertTrue(restored.events.last().seq > seqBefore)
     }

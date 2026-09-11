@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import com.dairy.receiving.app.workflow.CompartmentUi
 import com.dairy.receiving.app.workflow.TripUiState
 import com.dairy.receiving.core.model.FindingCode
+import com.dairy.receiving.core.model.FlushDestination
 import com.dairy.receiving.core.model.ScreenAssay
 
 @Composable
@@ -26,8 +27,10 @@ fun CompartmentScreen(
     onReload: (String, String) -> Unit,
     onComposite: (List<String>, String) -> Unit,
     onSeparate: (String) -> Unit,
+    onConnectPipeline: (String, String, Long, FlushDestination, Double?, Boolean, String) -> Unit,
+    onSwapHose: (String, Boolean, String) -> Unit,
     onOpen: () -> Unit,
-    onClose: () -> Unit,
+    onClose: (Boolean) -> Unit,
     onOverride: (String, Set<FindingCode>) -> Unit,
 ) {
     val c = state.selectedCompartment ?: return
@@ -174,15 +177,101 @@ fun CompartmentScreen(
             }
             Button(onClick = { onComposite(picked.toList(), tank) },
                 enabled = picked.isNotEmpty()) { Text("声明多仓混合卸载（含组分身份）") }
+
+            // —— 卸奶管线残留见证：清洁验收 / 连接时刻 / 冲洗液去向 ——
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("管线见证（开阀同级硬前置；首仓/末仓分别保留残留影响，不分摊）",
+                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            if (state.pipelineLines.isNotEmpty()) {
+                Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(8.dp)) {
+                        state.pipelineLines.forEach {
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+            var pipeline by remember { mutableStateOf("P-1") }
+            var hose by remember { mutableStateOf("H-1") }
+            var validMin by remember { mutableStateOf("120") }
+            var flushVol by remember { mutableStateOf("20") }
+            var flushDest by remember { mutableStateOf(FlushDestination.RECLAIM) }
+            var backflow by remember { mutableStateOf(false) }
+            var sharedTruck by remember { mutableStateOf("") }
+            Row {
+                OutlinedTextField(value = pipeline, onValueChange = { pipeline = it },
+                    label = { Text("管线/歧管") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                OutlinedTextField(value = hose, onValueChange = { hose = it },
+                    label = { Text("软管") }, modifier = Modifier.weight(1f))
+            }
+            Row {
+                OutlinedTextField(value = validMin, onValueChange = { validMin = it },
+                    label = { Text("清洁有效（分钟，负=已过期）") },
+                    modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                OutlinedTextField(value = flushVol, onValueChange = { flushVol = it },
+                    label = { Text("冲洗液量 L") }, modifier = Modifier.weight(1f))
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                FlushDestination.entries.forEach { d ->
+                    FilterChip(selected = flushDest == d, onClick = { flushDest = d },
+                        label = { Text(when (d) {
+                            FlushDestination.RECLAIM -> "回收"
+                            FlushDestination.WASTE -> "废弃"
+                            FlushDestination.MILK_TANK -> "冲入奶罐"
+                            FlushDestination.UNKNOWN -> "去向不明"
+                        }) })
+                    Spacer(Modifier.width(6.dp))
+                }
+            }
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Switch(checked = backflow, onCheckedChange = { backflow = it })
+                Text("冲洗液疑似回流")
+                Spacer(Modifier.width(12.dp))
+                OutlinedTextField(value = sharedTruck, onValueChange = { sharedTruck = it },
+                    label = { Text("共用歧管车号（可空）") }, modifier = Modifier.weight(1f))
+            }
+            Button(onClick = {
+                onConnectPipeline(pipeline, hose, validMin.toLongOrNull() ?: 0L,
+                    flushDest, flushVol.toDoubleOrNull(), backflow, sharedTruck)
+            }, enabled = c.boundaryDeclared) {
+                Text("见证管线连接（清洁验收+连接时刻+冲洗液去向）")
+            }
+            if (!c.boundaryDeclared)
+                Text("须先声明卸奶边界", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall)
+            else if (!c.pipelineWitnessed)
+                Text("管线连接未见证：系统不会登记开阀", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium)
+
+            // —— 软管临时更换 ——
+            var newHose by remember { mutableStateOf("") }
+            var hoseCleaned by remember { mutableStateOf(false) }
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(value = newHose, onValueChange = { newHose = it },
+                    label = { Text("更换软管编号") }, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Switch(checked = hoseCleaned, onCheckedChange = { hoseCleaned = it })
+                Text("清洁已核验")
+            }
+            OutlinedButton(onClick = { onSwapHose(newHose, hoseCleaned, "现场临时更换") },
+                enabled = newHose.isNotBlank() && c.pipelineWitnessed) {
+                Text("登记软管临时更换")
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             Row {
                 Button(onClick = onOpen, colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error)) { Text("人工开阀") }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = onClose) { Text("关阀完成") }
+                OutlinedButton(onClick = { onClose(true) }) { Text("关阀完成") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { onClose(false) }) { Text("只卸一部分关阀") }
             }
-            Text("系统只记录人工动作，绝不驱动阀门；封签/感官/搅拌/卸前样/卸奶边界" +
-                "为同级硬前置，任一缺失即拒绝登记开阀。",
+            Text("系统只记录人工动作，绝不驱动阀门；封签/感官/搅拌/卸前样/卸奶边界/" +
+                "管线见证为同级硬前置，任一缺失即拒绝登记开阀。",
                 style = MaterialTheme.typography.labelSmall)
         }
 

@@ -31,6 +31,8 @@ object MementoCodec {
         put("audit", JSONArray(m.audit.map { jAudit(it) }))
         put("sampleSources", jMap(m.sampleSources.map { (k, v) ->
             k.value to v.joinToString(",") { it.value } }))
+        put("pipelineConnections", JSONArray(m.pipelineConnections.map { jConnection(it) }))
+        put("hoseSwaps", JSONArray(m.hoseSwaps.map { jHoseSwap(it) }))
     }.toString(2)
 
     fun decode(text: String): TripMemento {
@@ -55,10 +57,16 @@ object MementoCodec {
             .mapValues { (it.value as String).split(",").filter(String::isNotBlank)
                 .map(::CompartmentCode) }
             .mapKeys { SampleId(it.key) }
+        // 旧快照无管线见证字段：视为无连接记录，规则会判 PIPELINE_WITNESS_MISSING
+        val pipelineConnections = o.optJSONArray("pipelineConnections")?.items()
+            ?.map { dConnection(it as JSONObject) } ?: emptyList()
+        val hoseSwaps = o.optJSONArray("hoseSwaps")?.items()
+            ?.map { dHoseSwap(it as JSONObject) } ?: emptyList()
         return TripMemento(
             TripId(o.getString("tripId")), TruckId(o.getString("truckId")),
             compartments, config, sealBindings, bottleBindings, compositeSamples,
             declarations, overrides, audit, sampleSources,
+            pipelineConnections, hoseSwaps,
         )
     }
 
@@ -93,6 +101,7 @@ object MementoCodec {
         put("lab", JSONArray(c.labResults.map { (sid, r) -> jLab(sid, r) }))
         c.unloadStartedAt?.let { put("unloadStart", it.toString()) }
         c.unloadFinishedAt?.let { put("unloadEnd", it.toString()) }
+        if (c.partialUnload) put("partialUnload", true)
         c.unloadGroupId?.let { put("group", it) }
         c.sensory?.let { put("sensory", JSONObject().apply {
             put("normal", it.normal); put("note", it.note)
@@ -167,6 +176,38 @@ object MementoCodec {
         put("seq", a.seq); put("at", a.at.toString())
         a.actor?.let { put("actor", it.value) }
         put("action", a.action); put("detail", a.detail)
+    }
+
+    private fun jConnection(c: PipelineConnection) = JSONObject().apply {
+        put("group", c.groupId); put("pipeline", c.pipeline.value)
+        put("hose", c.hose.value)
+        put("comps", JSONArray(c.compartments.map { it.value }))
+        put("cleaning", JSONObject().apply {
+            put("pipeline", c.cleaning.pipeline.value)
+            put("method", c.cleaning.method)
+            put("by", c.cleaning.acceptedBy.value)
+            put("at", c.cleaning.acceptedAt.toString())
+            put("validUntil", c.cleaning.validUntil.toString())
+        })
+        put("flush", JSONObject().apply {
+            put("dest", c.flush.destination.name)
+            c.flush.volumeLiters?.let { put("vol", it) }
+            put("backflow", c.flush.backflowSuspected)
+            put("by", c.flush.recordedBy.value)
+            put("at", c.flush.recordedAt.toString())
+        })
+        put("by", c.connectedBy.value); put("at", c.connectedAt.toString())
+        c.sharedWithTruck?.let { put("sharedTruck", it.value) }
+        c.sharedWithTrip?.let { put("sharedTrip", it.value) }
+    }
+
+    private fun jHoseSwap(s: HoseSwap) = JSONObject().apply {
+        put("group", s.groupId)
+        s.oldHose?.let { put("oldHose", it.value) }
+        put("newHose", s.newHose.value)
+        put("cleaned", s.cleanedVerified)
+        put("reason", s.reason)
+        put("by", s.swappedBy.value); put("at", s.swappedAt.toString())
     }
 
     private fun jMap(pairs: List<Pair<String, String>>) = JSONObject().apply {
@@ -278,6 +319,7 @@ object MementoCodec {
         labResults = o.getJSONArray("lab").items().associate { dLab(it as JSONObject) },
         unloadStartedAt = if (o.has("unloadStart")) Instant.parse(o.getString("unloadStart")) else null,
         unloadFinishedAt = if (o.has("unloadEnd")) Instant.parse(o.getString("unloadEnd")) else null,
+        partialUnload = o.optBoolean("partialUnload", false),
         unloadGroupId = o.optString("group").ifBlank { null },
         sensory = o.optJSONObject("sensory")?.let { s ->
             SensoryCheck(s.getBoolean("normal"), s.getString("note"),
@@ -325,5 +367,45 @@ object MementoCodec {
         actor = o.optString("actor").ifBlank { null }?.let(::OperatorId),
         action = o.getString("action"),
         detail = o.getString("detail"),
+    )
+
+    private fun dConnection(o: JSONObject): PipelineConnection {
+        val cl = o.getJSONObject("cleaning")
+        val fl = o.getJSONObject("flush")
+        return PipelineConnection(
+            groupId = o.getString("group"),
+            pipeline = PipelineId(o.getString("pipeline")),
+            hose = HoseId(o.getString("hose")),
+            compartments = o.getJSONArray("comps").items()
+                .map { CompartmentCode(it as String) },
+            cleaning = CleaningAcceptance(
+                pipeline = PipelineId(cl.getString("pipeline")),
+                method = cl.getString("method"),
+                acceptedBy = OperatorId(cl.getString("by")),
+                acceptedAt = Instant.parse(cl.getString("at")),
+                validUntil = Instant.parse(cl.getString("validUntil")),
+            ),
+            flush = FlushRecord(
+                destination = FlushDestination.valueOf(fl.getString("dest")),
+                volumeLiters = if (fl.has("vol")) fl.getDouble("vol") else null,
+                backflowSuspected = fl.optBoolean("backflow", false),
+                recordedBy = OperatorId(fl.getString("by")),
+                recordedAt = Instant.parse(fl.getString("at")),
+            ),
+            connectedBy = OperatorId(o.getString("by")),
+            connectedAt = Instant.parse(o.getString("at")),
+            sharedWithTruck = o.optString("sharedTruck").ifBlank { null }?.let(::TruckId),
+            sharedWithTrip = o.optString("sharedTrip").ifBlank { null }?.let(::TripId),
+        )
+    }
+
+    private fun dHoseSwap(o: JSONObject) = HoseSwap(
+        groupId = o.getString("group"),
+        oldHose = o.optString("oldHose").ifBlank { null }?.let(::HoseId),
+        newHose = HoseId(o.getString("newHose")),
+        cleanedVerified = o.getBoolean("cleaned"),
+        reason = o.getString("reason"),
+        swappedBy = OperatorId(o.getString("by")),
+        swappedAt = Instant.parse(o.getString("at")),
     )
 }

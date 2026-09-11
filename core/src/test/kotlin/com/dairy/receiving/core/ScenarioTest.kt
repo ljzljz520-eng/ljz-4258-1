@@ -81,6 +81,21 @@ class ScenarioTest {
             TankId("T-1"), null, op, clock.instant))
     }
 
+    /** 见证一次合规管线连接（清洁有效/冲洗液回收/无回流/独占管线）。 */
+    private fun connectClean(wf: TripWorkflow, groupId: String, clock: MutableClock) {
+        clock.advance(Duration.ofSeconds(5))
+        val r = wf.recordPipelineConnection(
+            groupId = groupId,
+            pipeline = PipelineId("P-1"),
+            hose = HoseId("H-1"),
+            cleaning = CleaningAcceptance(PipelineId("P-1"), "CIP", op,
+                clock.instant.minus(Duration.ofHours(1)),
+                clock.instant.plus(Duration.ofHours(2))),
+            flush = FlushRecord(FlushDestination.RECLAIM, 20.0, false, op, clock.instant),
+            by = op)
+        assertTrue(r.accepted, "合规管线连接见证必须被接受")
+    }
+
     // ---- 场景 1：封签号手写不清 -------------------------------------------------
 
     @Test
@@ -114,6 +129,7 @@ class ScenarioTest {
             written = SealId("S-A-l"), writtenIllegible = true,
             checkedBy = op, checkedAt = clock.instant))
         declareSeparate(wf, c, clock)
+        connectClean(wf, "g-1", clock)
 
         assertTrue(wf.findingsFor(c.code).any { it.code == FindingCode.SEAL_ILLEGIBLE })
         assertFalse(wf.openBlockings(c.code).any { it.code == FindingCode.SEAL_ILLEGIBLE })
@@ -290,6 +306,7 @@ class ScenarioTest {
         val decl = UnloadDeclaration("g6", listOf(a.code, b.code),
             UnloadBoundary.COMPOSITE, TankId("T-9"), cs.id, op, clock.instant)
         assertTrue(wf.declareUnload(decl).accepted)
+        connectClean(wf, "g6", clock)
         assertTrue(wf.confirmValveOpened(a.code, op).accepted)
         assertTrue(wf.confirmValveOpened(b.code, op).accepted)
         clock.advance(Duration.ofMinutes(20))
@@ -325,6 +342,7 @@ class ScenarioTest {
         val wf = TripWorkflow(TripId("t7"), TruckId("豫M-007"), listOf(c), clock = clock)
         fullPrep(c, wf, clock)
         declareSeparate(wf, c, clock)
+        connectClean(wf, "g-7", clock)
         assertEquals(CompartmentStatus.SAMPLED, wf.compartments[c.code]!!.status)
         assertEquals(Recommendation.ACCEPT, wf.recommendation(c.code))
     }
@@ -383,6 +401,7 @@ class ScenarioTest {
         wf.bindBottle(s.bottleTag, s.id); wf.takeSample(c.code, s)
         wf.declareUnload(UnloadDeclaration("g-9A", listOf(c.code),
             UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+        connectClean(wf, "g-9A", clock)
 
         assertTrue(wf.openBlockings(c.code).any {
             it.code == FindingCode.SAMPLE_WEIGHT_WRONG_DEVICE
@@ -411,6 +430,7 @@ class ScenarioTest {
         wf.bindBottle(good.bottleTag, good.id); wf.takeSample(c.code, good)
         wf.declareUnload(UnloadDeclaration("g-9C", listOf(c.code),
             UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+        connectClean(wf, "g-9C", clock)
         assertFalse(wf.findingsFor(c.code).any {
             it.code in setOf(FindingCode.SAMPLE_WEIGHT_MISSING,
                 FindingCode.SAMPLE_WEIGHT_WRONG_DEVICE)
@@ -497,6 +517,7 @@ class ScenarioTest {
             clock.instant, op))
         wf.declareUnload(UnloadDeclaration("g-11", listOf(c.code),
             UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+        connectClean(wf, "g-11", clock)
 
         val r = wf.confirmValveOpened(c.code, op)
         assertFalse(r.accepted)
@@ -522,6 +543,7 @@ class ScenarioTest {
         val wf = TripWorkflow(TripId("t11"), TruckId("豫M-011"), listOf(c), clock = clock)
         fullPrep(c, wf, clock, bottle = "B-11", sampleId = "SMP-11")
         declareSeparate(wf, c, clock)
+        connectClean(wf, "g-11", clock)
         assertTrue(wf.confirmValveOpened(c.code, op).accepted)
     }
 }

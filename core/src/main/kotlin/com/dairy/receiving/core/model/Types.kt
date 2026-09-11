@@ -16,5 +16,9 @@ import java.time.Instant
 @JvmInline value class TankId(val value: String) { init { require(value.isNotBlank()) } }
 @JvmInline value class OperatorId(val value: String) { init { require(value.isNotBlank()) } }
 @JvmInline value class Pin(val value: String)
+/** 卸奶管线/歧管编号（收奶区固定设备台账） */
+@JvmInline value class PipelineId(val value: String) { init { require(value.isNotBlank()) } }
+/** 卸奶软管编号（临时更换须留痕） */
+@JvmInline value class HoseId(val value: String) { init { require(value.isNotBlank()) } }
 
 typealias TimePoint = Instant

@@ -18,4 +18,8 @@ data class TripMemento(
     val overrides: List<SupervisorOverride>,
     val audit: List<AuditEvent>,
     val sampleSources: Map<SampleId, List<CompartmentCode>>,
+    /** 卸奶管线连接见证（首仓/末仓残留归属的原始凭据） */
+    val pipelineConnections: List<PipelineConnection> = emptyList(),
+    /** 软管临时更换留痕 */
+    val hoseSwaps: List<HoseSwap> = emptyList(),
 )

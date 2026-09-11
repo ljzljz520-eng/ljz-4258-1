@@ -46,6 +46,8 @@ class TripWorkflow(
     private val compositeSamples = mutableMapOf<SampleId, Sample>()
     private val overrides = mutableListOf<SupervisorOverride>()
     private val audit = mutableListOf<AuditEvent>()
+    private val pipelineConnections = mutableListOf<PipelineConnection>()
+    private val hoseSwaps = mutableListOf<HoseSwap>()
 
     /** 样品 ID -> 来源仓，用于实验室结果回指 */
     private val sampleSources = mutableMapOf<SampleId, List<CompartmentCode>>()
@@ -64,11 +66,15 @@ class TripWorkflow(
         overrides.addAll(memento.overrides)
         audit.addAll(memento.audit)
         sampleSources.putAll(memento.sampleSources)
+        pipelineConnections.addAll(memento.pipelineConnections)
+        hoseSwaps.addAll(memento.hoseSwaps)
     }
 
     val events: List<AuditEvent> get() = audit.toList()
     val supervisorOverrides: List<SupervisorOverride> get() = overrides.toList()
     val unloadDeclarations: List<UnloadDeclaration> get() = declarations.toList()
+    val connections: List<PipelineConnection> get() = pipelineConnections.toList()
+    val hoseSwapRecords: List<HoseSwap> get() = hoseSwaps.toList()
 
     /** 装车预报中为该仓登记的期望封签绑定（罐口扫签/封签核验时的比对基准）。 */
     fun expectedSeal(code: CompartmentCode): ExpectedSealBinding? = sealBindings[code]
@@ -229,6 +235,87 @@ class TripWorkflow(
         return CommandResult(true, findingsFor(declaration.compartments), "卸奶边界已声明")
     }
 
+    // ---------------- 卸奶管线残留见证 ----------------
+
+    /** 该卸奶组最新一次管线连接见证（重复连接以最新为准，历史留痕）。 */
+    fun latestConnection(groupId: String): PipelineConnection? =
+        pipelineConnections.lastOrNull { it.groupId == groupId }
+
+    /**
+     * 见证车辆-管线连接：登记清洁验收、连接时刻与前段冲洗液去向。
+     * 必须先声明卸奶边界（组分顺序即卸奶顺序，首仓 = 第一组分）；
+     * 清洁验收必须属于所接管线。登记后首仓/末仓残留归属即确定，
+     * 残留绝不在组分仓间平均分摊（规则见 PipelinePolicy）。
+     */
+    fun recordPipelineConnection(
+        groupId: String,
+        pipeline: PipelineId,
+        hose: HoseId,
+        cleaning: CleaningAcceptance,
+        flush: FlushRecord,
+        sharedWithTruck: TruckId? = null,
+        sharedWithTrip: TripId? = null,
+        by: OperatorId,
+    ): CommandResult {
+        val decl = declarations.lastOrNull { it.groupId == groupId }
+            ?: return CommandResult(false, emptyList(),
+                "卸奶组 $groupId 尚未声明卸奶边界，不能见证管线连接")
+        if (cleaning.pipeline != pipeline) {
+            return CommandResult(false, emptyList(),
+                "清洁验收针对管线 ${cleaning.pipeline.value}，与所接 ${pipeline.value} 不符")
+        }
+        val conn = PipelineConnection(
+            groupId = groupId,
+            pipeline = pipeline,
+            hose = hose,
+            compartments = decl.compartments,
+            cleaning = cleaning,
+            flush = flush,
+            connectedBy = by,
+            connectedAt = now,
+            sharedWithTruck = sharedWithTruck,
+            sharedWithTrip = sharedWithTrip,
+        )
+        pipelineConnections += conn
+        // 连接见证改变管线类缺陷集合，重推导组分仓状态
+        decl.compartments.forEach { update(must(it)) }
+        log(by, "PIPELINE_CONNECTED",
+            "组$groupId 接管线${pipeline.value} 软管${hose.value} " +
+                "首仓${decl.compartments.first().value} " +
+                "清洁有效至${cleaning.validUntil} 冲洗液->${flush.destination}" +
+                (sharedWithTruck?.let { " 与车${it.value}共用歧管" } ?: ""))
+        return CommandResult(true, findingsFor(decl.compartments),
+            "管线连接已见证：首仓 ${decl.compartments.first().value} 保留前段残留影响（不分摊）")
+    }
+
+    /**
+     * 登记软管临时更换。暴露仓 = 更换时刻正在卸的仓（否则该组首仓）；
+     * 更换软管清洁未核验 => 暴露仓阻断（PIPELINE_HOSE_UNVERIFIED）。
+     */
+    fun recordHoseSwap(
+        groupId: String,
+        newHose: HoseId,
+        cleanedVerified: Boolean,
+        reason: String,
+        by: OperatorId,
+    ): CommandResult {
+        val conn = latestConnection(groupId)
+            ?: return CommandResult(false, emptyList(),
+                "卸奶组 $groupId 无管线连接见证，不能登记软管更换")
+        val currentHose = hoseSwaps.lastOrNull { it.groupId == groupId }?.newHose ?: conn.hose
+        val swap = HoseSwap(groupId, currentHose, newHose, cleanedVerified,
+            reason, by, now)
+        hoseSwaps += swap
+        conn.compartments.forEach { update(must(it)) }
+        val exposed = PipelinePolicy.hoseSwapExposure(conn, swap, _compartments)
+        log(by, "HOSE_SWAPPED",
+            "组$groupId 软管${currentHose.value}->${newHose.value} " +
+                "清洁核验=$cleanedVerified 暴露仓${exposed.value} 原因=$reason")
+        return CommandResult(true, findingsFor(conn.compartments),
+            if (cleanedVerified) "软管已更换（清洁已核验），暴露仓 ${exposed.value} 留痕"
+            else "软管清洁未核验：暴露仓 ${exposed.value} 已阻断")
+    }
+
     /**
      * 收奶员人工开阀确认。系统仅记录、不驱动执行机构；
      * 硬前置（封签/感官/搅拌/卸前样/卸奶边界声明，同等级逐项）不满足
@@ -237,7 +324,8 @@ class TripWorkflow(
     fun confirmValveOpened(code: CompartmentCode, by: OperatorId): CommandResult {
         val c = must(code)
         val blockers = UnloadPolicy.openValveBlockers(
-            c, config, declarations.flatMap { it.compartments }.toSet())
+            c, config, declarations.flatMap { it.compartments }.toSet(),
+            pipelineConnections.map { it.groupId }.toSet())
         if (blockers.isNotEmpty()) {
             return CommandResult(false, findingsFor(code),
                 "仓${code.value} 不具备开卸条件：${blockers.joinToString("、")}")
@@ -266,10 +354,18 @@ class TripWorkflow(
         return snapshot("已记录物理开阀（绕过），时序缺陷将被标记", code)
     }
 
-    fun confirmValveClosed(code: CompartmentCode, by: OperatorId): CommandResult {
+    /**
+     * 收奶员人工关阀。[complete]=false 表示只卸一部分即关阀：
+     * 余奶身份保留在本仓（PARTIAL_UNLOAD 留痕）；若该仓是本组首仓，
+     * 它同时成为管线末仓——首仓/末仓残留影响都落在同一仓，仍不分摊。
+     */
+    fun confirmValveClosed(code: CompartmentCode, by: OperatorId,
+                           complete: Boolean = true): CommandResult {
         val c = must(code)
-        update(c.copy(status = CompartmentStatus.UNLOADED, unloadFinishedAt = now))
-        log(by, "HUMAN_CLOSED_VALVE", "仓${code.value}")
+        update(c.copy(status = CompartmentStatus.UNLOADED, unloadFinishedAt = now,
+            partialUnload = !complete))
+        log(by, "HUMAN_CLOSED_VALVE",
+            "仓${code.value}" + if (complete) "" else "（只卸一部分，余奶身份保留本仓）")
         return snapshot("已记录关阀，卸奶完成", code)
     }
 
@@ -319,6 +415,8 @@ class TripWorkflow(
             out += ReloadPolicy.evaluate(c, now)
             out += LabPolicy.evaluate(c, now)
         }
+        out += PipelinePolicy.evaluate(
+            declarations, pipelineConnections, hoseSwaps, _compartments, now)
         for (d in declarations) {
             out += UnloadPolicy.evaluateComposite(
                 d, _compartments, blockingByCompartment(out), compositeSamples, now)
@@ -399,6 +497,8 @@ class TripWorkflow(
         SamplingPolicy.evaluate(c, bottleBindings, config, now),
         ReloadPolicy.evaluate(c, now),
         LabPolicy.evaluate(c, now),
+        PipelinePolicy.evaluate(declarations, pipelineConnections, hoseSwaps,
+            _compartments, now).filter { it.compartment == c.code },
     ).flatten().filter { it.code.blocking }
 
     private fun must(code: CompartmentCode): Compartment =
@@ -422,6 +522,8 @@ class TripWorkflow(
         overrides = overrides.toList(),
         audit = audit.toList(),
         sampleSources = sampleSources.toMap(),
+        pipelineConnections = pipelineConnections.toList(),
+        hoseSwaps = hoseSwaps.toList(),
     )
 
     companion object {

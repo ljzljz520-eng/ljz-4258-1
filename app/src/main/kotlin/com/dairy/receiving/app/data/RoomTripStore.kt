@@ -2,6 +2,7 @@ package com.dairy.receiving.app.data
 
 import com.dairy.receiving.app.data.local.AppDatabase
 import com.dairy.receiving.app.data.local.CompartmentEntity
+import com.dairy.receiving.app.data.local.PipelineConnectionEntity
 import com.dairy.receiving.app.data.local.SampleEntity
 import com.dairy.receiving.app.data.local.SealEntity
 import com.dairy.receiving.app.data.local.TripEntity
@@ -59,6 +60,24 @@ class RoomTripStore(private val db: AppDatabase) : TripStore {
                 samples = memento.compartments.flatMap { c ->
                     c.samples.map { s -> s.toEntity(memento.tripId.value) }
                 } + memento.compositeSamples.values.map { it.toEntity(memento.tripId.value) },
+                pipelines = memento.pipelineConnections.map { p ->
+                    PipelineConnectionEntity(
+                        tripId = memento.tripId.value,
+                        groupId = p.groupId,
+                        pipeline = p.pipeline.value,
+                        hose = p.hose.value,
+                        compartments = p.compartments.joinToString(",") { it.value },
+                        cleaningMethod = p.cleaning.method,
+                        cleaningAcceptedAt = p.cleaning.acceptedAt.toString(),
+                        cleaningValidUntil = p.cleaning.validUntil.toString(),
+                        flushDestination = p.flush.destination.name,
+                        flushVolumeLiters = p.flush.volumeLiters,
+                        backflowSuspected = p.flush.backflowSuspected,
+                        sharedWithTruck = p.sharedWithTruck?.value,
+                        connectedBy = p.connectedBy.value,
+                        connectedAt = p.connectedAt.toString(),
+                    )
+                },
             )
         }
     }

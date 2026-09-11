@@ -110,11 +110,101 @@ object DemoScenarios {
         return wf
     }
 
+    // ---------------- 卸奶管线残留见证演练 ----------------
+
+    private fun cleaning(pipeline: String, validUntil: java.time.Instant) =
+        CleaningAcceptance(PipelineId(pipeline), "CIP", op,
+            validUntil.minus(Duration.ofHours(2)), validUntil)
+
+    private fun flush(dest: FlushDestination, backflow: Boolean = false) =
+        FlushRecord(dest, 20.0, backflow, op, arrival)
+
+    private fun declareAndConnect(
+        wf: TripWorkflow, code: String,
+        cleaningValidUntil: java.time.Instant = arrival.plus(Duration.ofHours(2)),
+        dest: FlushDestination = FlushDestination.RECLAIM,
+        backflow: Boolean = false,
+        sharedWith: TruckId? = null,
+    ) {
+        val c = CompartmentCode(code)
+        wf.declareUnload(UnloadDeclaration("g-$code", listOf(c), UnloadBoundary.SEPARATE,
+            TankId("T-1"), null, op, arrival))
+        wf.recordPipelineConnection("g-$code", PipelineId("P-1"), HoseId("H-1"),
+            cleaning("P-1", cleaningValidUntil), flush(dest, backflow),
+            sharedWithTruck = sharedWith, by = op)
+    }
+
+    /** 6 管线清洁状态过期：连接时刻晚于清洁有效期 => 首仓阻断。 */
+    fun pipelineCleaningExpired(): TripWorkflow {
+        val wf = wf("6", truck = "豫M-006")
+        prepare(wf, "6")
+        declareAndConnect(wf, "6",
+            cleaningValidUntil = arrival.minus(Duration.ofMinutes(30)))
+        return wf
+    }
+
+    /** 7 前段冲洗液回流：冲洗液倒灌回槽车首仓 => 首仓阻断。 */
+    fun flushBackflow(): TripWorkflow {
+        val wf = wf("7", truck = "豫M-007")
+        prepare(wf, "7")
+        declareAndConnect(wf, "7", backflow = true)
+        return wf
+    }
+
+    /** 8 软管临时更换未核验：卸奶中途换管，暴露仓阻断。 */
+    fun hoseSwapUnverified(): TripWorkflow {
+        val wf = wf("8", truck = "豫M-008")
+        prepare(wf, "8")
+        declareAndConnect(wf, "8")
+        wf.confirmValveOpened(CompartmentCode("8"), op)
+        wf.recordHoseSwap("g-8", HoseId("H-9"), cleanedVerified = false,
+            reason = "原软管鼓包临时更换", by = op)
+        return wf
+    }
+
+    /** 9 两车共用歧管：首仓接触前车滞留奶 => 警告留痕，不分摊。 */
+    fun sharedManifold(): TripWorkflow {
+        val wf = wf("9A", "9B", truck = "豫M-009")
+        prepare(wf, "9A")
+        prepare(wf, "9B")
+        declareAndConnect(wf, "9A", sharedWith = TruckId("豫M-888"))
+        declareAndConnect(wf, "9B")
+        return wf
+    }
+
+    /** 10 首仓只卸一部分：首仓即末仓，残留影响同仓保留，余奶不混。 */
+    fun firstCompartmentPartial(): TripWorkflow {
+        val wf = wf("10A", "10B", truck = "豫M-010")
+        prepare(wf, "10A", bottle = "B-10A")
+        prepare(wf, "10B", bottle = "B-10B")
+        // 混合边界 + 混合样，组分身份齐全
+        val cs = Sample(SampleId("SMP-MIX10"), BottleTagId("B-MIX10"), SampleKind.COMPOSITE,
+            listOf(CompartmentCode("10A"), CompartmentCode("10B")), null, null, null,
+            arrival, op)
+        wf.bindBottle(BottleTagId("B-MIX10"), cs.id)
+        wf.registerCompositeSample(cs)
+        wf.declareUnload(UnloadDeclaration("g-10",
+            listOf(CompartmentCode("10A"), CompartmentCode("10B")),
+            UnloadBoundary.COMPOSITE, TankId("T-9"), cs.id, op, arrival))
+        wf.recordPipelineConnection("g-10", PipelineId("P-2"), HoseId("H-2"),
+            cleaning("P-2", arrival.plus(Duration.ofHours(2))),
+            flush(FlushDestination.RECLAIM), by = op)
+        // 首仓 10A 开阀后只卸一部分即关阀
+        wf.confirmValveOpened(CompartmentCode("10A"), op)
+        wf.confirmValveClosed(CompartmentCode("10A"), op, complete = false)
+        return wf
+    }
+
     fun all(): List<Pair<String, () -> TripWorkflow>> = listOf(
         "封签手写不清" to ::illegibleSeal,
         "车载温度缺段" to ::truckLogGap,
         "先卸后取样" to ::unloadBeforeSample,
         "混样瓶贴错" to ::mislabeledBottle,
         "中途补装另一牧场" to ::midTripReload,
+        "管线清洁状态过期" to ::pipelineCleaningExpired,
+        "前段冲洗液回流" to ::flushBackflow,
+        "软管临时更换未核验" to ::hoseSwapUnverified,
+        "两车共用歧管" to ::sharedManifold,
+        "首仓只卸一部分" to ::firstCompartmentPartial,
     )
 }

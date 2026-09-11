@@ -87,8 +87,10 @@ class MainActivity : ComponentActivity() {
                                 onReload = vm::reportReload,
                                 onComposite = vm::declareComposite,
                                 onSeparate = vm::declareSeparate,
+                                onConnectPipeline = vm::connectPipeline,
+                                onSwapHose = vm::swapHose,
                                 onOpen = vm::humanOpenValve,
-                                onClose = vm::humanCloseValve,
+                                onClose = { complete -> vm.humanCloseValve(complete) },
                                 onOverride = vm::supervisorOverride)
                             2 -> ReportTab(state)
                         }

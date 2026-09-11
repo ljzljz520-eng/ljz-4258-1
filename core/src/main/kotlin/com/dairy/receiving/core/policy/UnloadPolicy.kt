@@ -73,12 +73,15 @@ object UnloadPolicy {
      *  3. 感官已检查；
      *  4. **搅拌已确认且时长达标**（取样代表性前提）；
      *  5. 卸前个体样已留存（代表性）；
-     *  6. **卸奶边界已声明且本仓属于某个已登记声明**（独立/混合边界必须先于开阀闭合）。
+     *  6. **卸奶边界已声明且本仓属于某个已登记声明**（独立/混合边界必须先于开阀闭合）；
+     *  7. **卸奶管线连接已见证**（清洁验收/连接时刻/前段冲洗液去向已登记，
+     *     首仓/末仓残留归属才可确定）。
      */
     fun openValveBlockers(
         c: Compartment,
         cfg: ReceivingPolicyConfig,
         declaredCompartments: Set<CompartmentCode>,
+        witnessedGroups: Set<String> = emptySet(),
     ): List<String> {
         val missing = mutableListOf<String>()
         if (c.secondaryLoads.isNotEmpty()) missing += "途中补装未决"
@@ -91,6 +94,9 @@ object UnloadPolicy {
         }
         if (!c.hasPreUnloadSample) missing += "卸前个体样缺失"
         if (c.code !in declaredCompartments) missing += "卸奶边界未声明（独立/混合）"
+        else if (c.unloadGroupId == null || c.unloadGroupId !in witnessedGroups) {
+            missing += "管线连接未见证（清洁验收/冲洗液去向）"
+        }
         return missing
     }
 
@@ -99,5 +105,6 @@ object UnloadPolicy {
         c: Compartment,
         cfg: ReceivingPolicyConfig = ReceivingPolicyConfig(),
         declaredCompartments: Set<CompartmentCode> = emptySet(),
-    ): Boolean = openValveBlockers(c, cfg, declaredCompartments).isEmpty()
+        witnessedGroups: Set<String> = emptySet(),
+    ): Boolean = openValveBlockers(c, cfg, declaredCompartments, witnessedGroups).isEmpty()
 }

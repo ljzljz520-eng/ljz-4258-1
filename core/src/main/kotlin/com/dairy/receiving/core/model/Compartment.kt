@@ -18,6 +18,8 @@ data class Compartment(
     val labResults: Map<SampleId, LabResult> = emptyMap(),
     val unloadStartedAt: TimePoint? = null,
     val unloadFinishedAt: TimePoint? = null,
+    /** 只卸一部分即关阀：余奶身份保留在本仓（首仓部分卸载时同时是末仓滞留） */
+    val partialUnload: Boolean = false,
     val unloadGroupId: String? = null,
     val sensory: SensoryCheck? = null,
 ) {

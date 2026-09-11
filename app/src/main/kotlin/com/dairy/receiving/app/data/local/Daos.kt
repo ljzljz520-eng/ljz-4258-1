@@ -56,3 +56,15 @@ interface SampleDao {
     @Query("DELETE FROM samples WHERE tripId = :tripId")
     suspend fun clearForTrip(tripId: String)
 }
+
+@Dao
+interface PipelineDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<PipelineConnectionEntity>)
+
+    @Query("SELECT * FROM pipeline_connections WHERE tripId = :tripId")
+    fun observeForTrip(tripId: String): Flow<List<PipelineConnectionEntity>>
+
+    @Query("DELETE FROM pipeline_connections WHERE tripId = :tripId")
+    suspend fun clearForTrip(tripId: String)
+}

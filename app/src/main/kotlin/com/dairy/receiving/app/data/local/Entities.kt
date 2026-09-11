@@ -60,3 +60,27 @@ data class SampleEntity(
     val takenAt: String,
     val takenBy: String,
 )
+
+/**
+ * 卸奶管线连接见证（按车-组检索）：清洁验收、连接时刻、前段冲洗液去向、
+ * 共用歧管车辆。首仓/末仓残留归属由 core 规则按组分顺序推导，不落库。
+ */
+@Entity(tableName = "pipeline_connections")
+data class PipelineConnectionEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val tripId: String,
+    val groupId: String,
+    val pipeline: String,
+    val hose: String,
+    /** 计划卸奶顺序（逗号分隔，首仓 = 第一个） */
+    val compartments: String,
+    val cleaningMethod: String,
+    val cleaningAcceptedAt: String,
+    val cleaningValidUntil: String,
+    val flushDestination: String,
+    val flushVolumeLiters: Double?,
+    val backflowSuspected: Boolean,
+    val sharedWithTruck: String?,
+    val connectedBy: String,
+    val connectedAt: String,
+)

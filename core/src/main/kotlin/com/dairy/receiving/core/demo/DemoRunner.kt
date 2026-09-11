@@ -2,9 +2,9 @@ package com.dairy.receiving.core.demo
 
 import com.dairy.receiving.core.report.TripReportBuilder
 
-/** 命令行演示：逐个打印五类异常场景的判定、建议与审计尾链。 */
+/** 命令行演示：逐个打印现场异常场景（含卸奶管线残留见证）的判定、建议与审计尾链。 */
 fun main() {
-    println("原奶槽车收奶核对 —— 五类现场异常离线演练\n")
+    println("原奶槽车收奶核对 —— 现场异常离线演练（含卸奶管线残留见证）\n")
     DemoScenarios.all().forEachIndexed { i, (name, factory) ->
         val wf = factory()
         val report = TripReportBuilder.build(wf)

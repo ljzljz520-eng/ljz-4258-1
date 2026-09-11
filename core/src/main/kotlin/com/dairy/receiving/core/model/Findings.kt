@@ -69,9 +69,33 @@ enum class FindingCode(
         "冰点/密度异常，疑似掺水掺假"),
     PHYS_ABNORMAL(FindingSeverity.WARNING, false, FindingCategory.IDENTITY,
         "理化指标异常"),
+
+    // —— 卸奶管线残留见证 ——
+    PIPELINE_WITNESS_MISSING(FindingSeverity.CRITICAL, true, FindingCategory.PIPELINE,
+        "卸奶管线连接未见证：缺清洁验收/连接时刻/前段冲洗液去向登记"),
+    PIPELINE_CLEANING_EXPIRED(FindingSeverity.CRITICAL, true, FindingCategory.PIPELINE,
+        "管线清洁状态过期：连接时刻晚于清洁验收有效期，首仓承担残留风险"),
+    PIPELINE_FLUSH_TO_MILK(FindingSeverity.CRITICAL, true, FindingCategory.PIPELINE,
+        "前段冲洗液冲入原奶罐：首仓被冲洗液污染"),
+    PIPELINE_FLUSH_DESTINATION_UNKNOWN(FindingSeverity.WARNING, false, FindingCategory.PIPELINE,
+        "前段冲洗液去向不明，无法排除进入原奶"),
+    PIPELINE_FLUSH_BACKFLOW(FindingSeverity.CRITICAL, true, FindingCategory.PIPELINE,
+        "冲洗液回流：前段冲洗液倒灌回槽车首仓"),
+    PIPELINE_SHARED_MANIFOLD(FindingSeverity.WARNING, false, FindingCategory.PIPELINE,
+        "与他车共用卸奶歧管：首仓接触前车管线滞留奶"),
+    PIPELINE_HOSE_UNVERIFIED(FindingSeverity.CRITICAL, true, FindingCategory.PIPELINE,
+        "临时更换的软管清洁未核验：暴露仓接触未核验软管"),
+    PIPELINE_RESIDUAL_FIRST(FindingSeverity.INFO, false, FindingCategory.PIPELINE,
+        "首仓保留管线前段残留影响（残留不在组分仓间分摊）"),
+    PIPELINE_RESIDUAL_LAST(FindingSeverity.INFO, false, FindingCategory.PIPELINE,
+        "末仓奶卸后滞留管线，身份保留至下一连接见证"),
+    PIPELINE_HOSE_SWAPPED(FindingSeverity.INFO, false, FindingCategory.PIPELINE,
+        "卸奶中途临时更换软管（清洁已核验），暴露仓留痕"),
+    PARTIAL_UNLOAD(FindingSeverity.WARNING, false, FindingCategory.PIPELINE,
+        "仓室只卸一部分即关阀：余奶身份保留在本仓"),
 }
 
-enum class FindingCategory { IDENTITY, TIMING, REPRESENTATIVENESS }
+enum class FindingCategory { IDENTITY, TIMING, REPRESENTATIVENESS, PIPELINE }
 
 data class Finding(
     val code: FindingCode,

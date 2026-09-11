@@ -39,11 +39,13 @@ data class CompartmentUi(
     val sealWritten: String?,
     val sealWrittenIllegible: Boolean,
     val boundaryDeclared: Boolean,
+    val pipelineWitnessed: Boolean,
     val stirringConfirmed: Boolean,
     val probeCelsius: Double?,
     val probeStable: Boolean,
     val sampleCount: Int,
     val preUnloadSample: Boolean,
+    val partialUnload: Boolean,
     val group: String?,
 )
 
@@ -57,6 +59,7 @@ data class TripUiState(
     val auditTail: List<String> = emptyList(),
     val report: String = "",
     val scale: ScaleUi? = null,
+    val pipelineLines: List<String> = emptyList(),
 ) {
     val selectedCompartment get(): CompartmentUi? = compartments.firstOrNull { it.code == selected }
 }
@@ -247,6 +250,43 @@ class ReceiveViewModel(
         persist(); project(r.message)
     }
 
+    /**
+     * 见证车辆-管线连接：登记清洁验收、连接时刻与前段冲洗液去向。
+     * 首仓/末仓残留归属由 core 规则推导（残留绝不分摊）；
+     * 清洁有效期分钟数为负即“清洁状态过期”场景。
+     */
+    fun connectPipeline(
+        pipeline: String, hose: String, cleaningValidMinutes: Long,
+        flushDest: FlushDestination, flushVolume: Double?,
+        backflow: Boolean, sharedTruck: String,
+    ) {
+        val w = wf ?: return; val code = current() ?: return
+        val group = w.compartments[code]?.unloadGroupId
+        if (group == null) { project("请先声明卸奶边界，再见证管线连接"); return }
+        val now = Instant.now(clock)
+        val pid = PipelineId(pipeline.ifBlank { "P-1" })
+        val r = w.recordPipelineConnection(
+            groupId = group,
+            pipeline = pid,
+            hose = HoseId(hose.ifBlank { "H-1" }),
+            cleaning = CleaningAcceptance(pid, "CIP", operator,
+                now.minusSeconds(3600), now.plusSeconds(cleaningValidMinutes * 60)),
+            flush = FlushRecord(flushDest, flushVolume, backflow, operator, now),
+            sharedWithTruck = sharedTruck.ifBlank { null }?.let(::TruckId),
+            by = operator)
+        persist(); project(r.message)
+    }
+
+    /** 登记软管临时更换：暴露仓（正在卸的仓，否则首仓）由 core 推导。 */
+    fun swapHose(newHose: String, cleanedVerified: Boolean, reason: String) {
+        val w = wf ?: return; val code = current() ?: return
+        val group = w.compartments[code]?.unloadGroupId
+        if (group == null) { project("本仓不在任何卸奶组，无法登记换管"); return }
+        val r = w.recordHoseSwap(group, HoseId(newHose.ifBlank { "H-?" }),
+            cleanedVerified, reason.ifBlank { "临时更换" }, operator)
+        persist(); project(r.message)
+    }
+
     /** 收奶员人工开阀——系统只记录；搅拌与卸奶边界声明是与封签/样品同级的硬前置。 */
     fun humanOpenValve(): CommandResult? {
         val w = wf ?: return null; val code = current() ?: return null
@@ -257,10 +297,10 @@ class ReceiveViewModel(
         return r
     }
 
-    fun humanCloseValve() {
+    fun humanCloseValve(complete: Boolean = true) {
         val w = wf ?: return; val code = current() ?: return
-        w.confirmValveClosed(code, operator)
-        persist(); project("已记录关阀")
+        w.confirmValveClosed(code, operator, complete)
+        persist(); project(if (complete) "已记录关阀" else "已记录关阀：只卸一部分，余奶身份保留本仓")
     }
 
     fun supervisorOverride(reason: String, codes: Set<FindingCode>) {
@@ -289,6 +329,7 @@ class ReceiveViewModel(
     private fun project(toast: String? = null) {
         val w = wf ?: return
         val declared = w.unloadDeclarations.flatMap { it.compartments }.toSet()
+        val witnessedGroups = w.connections.map { it.groupId }.toSet()
         val uiComps = w.compartments.values.sortedBy { it.code.value }.map { c ->
             val fs = w.findingsFor(c.code)
             CompartmentUi(
@@ -300,10 +341,12 @@ class ReceiveViewModel(
                 sealWritten = c.seal?.written?.value,
                 sealWrittenIllegible = c.seal?.writtenIllegible == true,
                 boundaryDeclared = c.code in declared,
+                pipelineWitnessed = c.unloadGroupId != null && c.unloadGroupId in witnessedGroups,
                 stirringConfirmed = c.stirringConfirmedAt != null,
                 probeCelsius = c.probe?.celsius, probeStable = c.probe?.stable == true,
                 sampleCount = c.samples.size,
                 preUnloadSample = c.hasPreUnloadSample,
+                partialUnload = c.partialUnload,
                 group = c.unloadGroupId,
             )
         }
@@ -316,6 +359,7 @@ class ReceiveViewModel(
                 auditTail = w.events.takeLast(6).reversed().map { e ->
                     "#${e.seq} ${e.action} ${e.detail}"
                 },
+                pipelineLines = TripReportBuilder.build(w).pipelines,
             )
         }
     }
