@@ -70,6 +70,13 @@ class TripWorkflow(
     val supervisorOverrides: List<SupervisorOverride> get() = overrides.toList()
     val unloadDeclarations: List<UnloadDeclaration> get() = declarations.toList()
 
+    /** 装车预报中为该仓登记的期望封签绑定（罐口扫签/封签核验时的比对基准）。 */
+    fun expectedSeal(code: CompartmentCode): ExpectedSealBinding? = sealBindings[code]
+
+    /** 已声明卸奶边界中包含该仓的最新声明（开阀前置之一）。 */
+    fun declarationOf(code: CompartmentCode): UnloadDeclaration? =
+        declarations.lastOrNull { code in it.compartments }
+
     private fun log(actor: OperatorId?, action: String, detail: String) {
         audit += AuditEvent(audit.size + 1L, now, actor, action, detail)
     }
@@ -80,6 +87,10 @@ class TripWorkflow(
 
     // ---------------- 到厂登记 ----------------
 
+    /**
+     * 登记装车预报中的“仓-封签-牧场批-NFC 标签”绑定（离线缓存/预报数据）。
+     * 罐口 NFC 扫签后与该绑定核对：NFC 签是封签核验的权威输入。
+     */
     fun registerNfcBinding(binding: ExpectedSealBinding) {
         sealBindings[binding.compartment] = binding
         log(null, "NFC_BINDING_CACHED",
@@ -87,7 +98,12 @@ class TripWorkflow(
                 "${binding.farm.value}/${binding.farmBatch.value}")
     }
 
-    /** 罐口 NFC 扫签：登记牧场身份。若与预报牧场不同，保留两个身份（途中补装线索）。 */
+    /**
+     * 罐口 NFC 扫签：一步闭合到封签核验。
+     *  - 身份与预报不符：登记途中补装线索并挂起（不产生封签核验，签不可信）；
+     *  - 身份相符：NFC 读签直接形成 [SealCheck]（权威输入），expected 取装车预报绑定，
+     *    无预报时以标签自报签号为准；手写件缺失不阻断 NFC 核验。
+     */
     fun scanHatchTag(code: CompartmentCode, tagFarm: FarmId, tagBatch: FarmBatchId,
                      tagSeal: SealId, tag: NfcTagId, by: OperatorId) {
         val c = must(code)
@@ -96,10 +112,20 @@ class TripWorkflow(
                 "罐口签 $tag 携带身份 ${tagFarm.value}/${tagBatch.value}，与预报不符")
             update(c.copy(secondaryLoads = c.secondaryLoads + sl))
             log(by, "RELOAD_SUSPECTED_NFC", "仓${code.value}")
-        } else {
-            sealBindings[code] = ExpectedSealBinding(code, tagSeal, tagFarm, tagBatch, c.loadedAt, tag)
-            log(by, "HATCH_TAG_SCANNED", "仓${code.value} 签${tagSeal.value}")
+            return
         }
+        val expected = sealBindings[code]?.seal ?: tagSeal
+        update(c.copy(seal = SealCheck(
+            expected = expected,
+            nfc = tagSeal,
+            nfcTag = tag,
+            written = null,
+            writtenIllegible = false,
+            checkedBy = by,
+            checkedAt = now,
+        )))
+        log(by, "HATCH_TAG_SCANNED",
+            "仓${code.value} 签${tagSeal.value}（NFC 读签已闭合封签核验）")
     }
 
     // ---------------- 逐仓确认 ----------------
@@ -205,15 +231,18 @@ class TripWorkflow(
 
     /**
      * 收奶员人工开阀确认。系统仅记录、不驱动执行机构；
-     * READY 条件不满足时拒绝登记（人可先请主管双签覆核）。
+     * 硬前置（封签/感官/搅拌/卸前样/卸奶边界声明，同等级逐项）不满足
+     * 或存在未决阻断项时拒绝登记（人可先请主管双签覆核）。
      */
     fun confirmValveOpened(code: CompartmentCode, by: OperatorId): CommandResult {
         val c = must(code)
-        val openBlock = openBlockings(code)
-        if (!UnloadPolicy.compartmentReady(c)) {
+        val blockers = UnloadPolicy.openValveBlockers(
+            c, config, declarations.flatMap { it.compartments }.toSet())
+        if (blockers.isNotEmpty()) {
             return CommandResult(false, findingsFor(code),
-                "仓${code.value} 不具备开卸条件（封签/感官/卸前样未齐）")
+                "仓${code.value} 不具备开卸条件：${blockers.joinToString("、")}")
         }
+        val openBlock = openBlockings(code)
         if (openBlock.isNotEmpty()) {
             return CommandResult(false, findingsFor(code),
                 "仓${code.value} 存在未决阻断：${openBlock.joinToString { it.code.name }}")

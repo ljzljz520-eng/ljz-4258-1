@@ -36,7 +36,9 @@ object DemoScenarios {
         val sid = SampleId("SMP-$code")
         wf.bindBottle(BottleTagId(bottle), sid)
         wf.takeSample(c.code, Sample(sid, BottleTagId(bottle), SampleKind.INDIVIDUAL,
-            listOf(c.code), 50.0, 180, 200.0, true, arrival, op))
+            listOf(c.code), 50.0, 180,
+            WeightReading(200.0, true, arrival, DEFAULT_SCALE_DEVICE_ID),
+            arrival, op))
     }
 
     /** 1 封签号手写不清：NFC 缺失，手填无法辨认 => 阻断挂起。 */
@@ -75,7 +77,10 @@ object DemoScenarios {
         wf.recordPhysicalBypass(c, start, op)
         // 5 分钟后才补取个体样 -> SAMPLE_AFTER_UNLOAD 阻断
         val late = Sample(SampleId("SMP-3L"), BottleTagId("B-3"), SampleKind.INDIVIDUAL,
-            listOf(c), 50.0, 180, 200.0, true, start.plus(Duration.ofMinutes(5)), op)
+            listOf(c), 50.0, 180,
+            WeightReading(200.0, true, start.plus(Duration.ofMinutes(5)),
+                DEFAULT_SCALE_DEVICE_ID),
+            start.plus(Duration.ofMinutes(5)), op)
         wf.bindBottle(BottleTagId("B-3"), late.id)
         wf.takeSample(c, late)
         return wf
@@ -89,7 +94,9 @@ object DemoScenarios {
         // 收奶员又扫到一枚贴在 B 样品上的 A 瓶签（混合样瓶贴错）
         val wrong = Sample(SampleId("SMP-4B-2"), BottleTagId("B-4A"),
             SampleKind.INDIVIDUAL, listOf(CompartmentCode("4B")),
-            50.0, 180, 200.0, true, arrival, op)
+            50.0, 180,
+            WeightReading(200.0, true, arrival, DEFAULT_SCALE_DEVICE_ID),
+            arrival, op)
         wf.takeSample(CompartmentCode("4B"), wrong)
         return wf
     }

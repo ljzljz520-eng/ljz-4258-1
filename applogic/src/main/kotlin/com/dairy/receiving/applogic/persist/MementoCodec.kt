@@ -69,6 +69,7 @@ object MementoCodec {
         put("stirSec", c.minStirringSeconds)
         put("depthMin", c.sampleDepthMinCm); put("depthMax", c.sampleDepthMaxCm)
         put("weightMin", c.minSampleWeightG)
+        put("scaleDevice", c.designatedScaleDeviceId)
         put("farms", JSONArray(c.allowedFarms?.map { it.value } ?: emptyList<String>()))
     }
 
@@ -121,8 +122,10 @@ object MementoCodec {
         put("sources", JSONArray(s.sourceCompartments.map { it.value }))
         s.depthCm?.let { put("depth", it) }
         s.stirringSeconds?.let { put("stirSec", it) }
-        s.weightG?.let { put("weight", it) }
-        put("weightStable", s.weightStable)
+        s.weight?.let { w -> put("weight", JSONObject().apply {
+            put("g", w.grams); put("stable", w.stable)
+            put("dev", w.deviceId); put("at", w.at.toString())
+        }) }
         put("at", s.takenAt.toString()); put("by", s.takenBy.value)
     }
 
@@ -180,6 +183,8 @@ object MementoCodec {
         sampleDepthMinCm = o.getDouble("depthMin"),
         sampleDepthMaxCm = o.getDouble("depthMax"),
         minSampleWeightG = o.getDouble("weightMin"),
+        designatedScaleDeviceId = o.optString("scaleDevice")
+            .ifBlank { DEFAULT_SCALE_DEVICE_ID },
         allowedFarms = o.getJSONArray("farms").items()
             .map { FarmId(it as String) }.toSet().ifEmpty { null },
     )
@@ -212,8 +217,27 @@ object MementoCodec {
             .map { CompartmentCode(it as String) },
         depthCm = if (o.has("depth")) o.getDouble("depth") else null,
         stirringSeconds = if (o.has("stirSec")) o.getInt("stirSec") else null,
-        weightG = if (o.has("weight")) o.getDouble("weight") else null,
-        weightStable = o.getBoolean("weightStable"),
+        weight = when {
+            // 新格式：重量链对象（克重/稳定/设备/时刻）
+            o.optJSONObject("weight") != null -> o.getJSONObject("weight").let { w ->
+                WeightReading(
+                    grams = w.getDouble("g"),
+                    stable = w.getBoolean("stable"),
+                    at = if (w.has("at")) Instant.parse(w.getString("at"))
+                         else Instant.parse(o.getString("at")),
+                    deviceId = if (w.has("dev")) w.getString("dev") else "unknown-device",
+                )
+            }
+            // 兼容旧快照：手工克重数字 + 布尔稳定标志。旧数据无法证明设备身份，
+            // 设备标为 "legacy-manual"，规则会判 SAMPLE_WEIGHT_WRONG_DEVICE（留痕阻断）。
+            o.has("weight") && !o.isNull("weight") -> WeightReading(
+                grams = o.getDouble("weight"),
+                stable = o.optBoolean("weightStable", false),
+                at = Instant.parse(o.getString("at")),
+                deviceId = "legacy-manual",
+            )
+            else -> null
+        },
         takenAt = Instant.parse(o.getString("at")),
         takenBy = OperatorId(o.getString("by")),
     )

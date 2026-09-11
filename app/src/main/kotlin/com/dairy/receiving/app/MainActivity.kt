@@ -15,13 +15,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.ViewModelProvider
 import com.dairy.receiving.app.data.RoomTripStore
 import com.dairy.receiving.app.data.local.AppDatabase
+import com.dairy.receiving.app.device.ble.BleScaleSource
 import com.dairy.receiving.app.device.nfc.AndroidNfcReader
 import com.dairy.receiving.app.ui.screens.CompartmentScreen
 import com.dairy.receiving.app.ui.screens.TripOverviewScreen
 import com.dairy.receiving.app.ui.theme.ReceivingTheme
 import com.dairy.receiving.app.workflow.ReceiveViewModel
+import com.dairy.receiving.core.model.DEFAULT_SCALE_DEVICE_ID
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        /** 收奶区指定采样秤配对 MAC（设备台账占位；生产环境由配置/台账下发）。 */
+        const val PAIRED_SCALE_MAC = "00:1A:7D:DA:71:13"
+    }
 
     private lateinit var vm: ReceiveViewModel
     private var nfcAdapter: NfcAdapter? = null
@@ -29,10 +36,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = RoomTripStore(AppDatabase.get(applicationContext))
+        // 指定 BLE 采样秤：MAC 与设备 ID 配对登记，只有该设备的稳定读数能形成重量链。
+        // 实际 MAC 由收奶区设备台账下发；此处为收奶区秤的占位地址。
+        val scaleSource = BleScaleSource(
+            context = applicationContext,
+            deviceMac = PAIRED_SCALE_MAC,
+            scaleDeviceId = DEFAULT_SCALE_DEVICE_ID,
+        )
         vm = ViewModelProvider(this, object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
-                ReceiveViewModel(store) as T
+                ReceiveViewModel(store, scaleSource = scaleSource) as T
         })[ReceiveViewModel::class.java]
 
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
@@ -69,7 +83,7 @@ class MainActivity : ComponentActivity() {
                                 onTruckLogGap = vm::attachTruckLog,
                                 onSensory = vm::sensory,
                                 onStir = vm::stirring,
-                                onSample = vm::takeIndividualSample,
+                                onSample = { depth -> vm.takeIndividualSample(depth) },
                                 onReload = vm::reportReload,
                                 onComposite = vm::declareComposite,
                                 onSeparate = vm::declareSeparate,

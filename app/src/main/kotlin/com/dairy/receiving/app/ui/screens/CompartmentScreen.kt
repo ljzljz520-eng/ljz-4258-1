@@ -22,7 +22,7 @@ fun CompartmentScreen(
     onTruckLogGap: (Long) -> Unit,
     onSensory: (Boolean, String) -> Unit,
     onStir: (Int) -> Unit,
-    onSample: (Double, Double, Boolean) -> Unit,
+    onSample: (Double) -> Unit,
     onReload: (String, String) -> Unit,
     onComposite: (List<String>, String) -> Unit,
     onSeparate: (String) -> Unit,
@@ -31,6 +31,7 @@ fun CompartmentScreen(
     onOverride: (String, Set<FindingCode>) -> Unit,
 ) {
     val c = state.selectedCompartment ?: return
+    val scale = state.scale
     Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
         Text("仓 ${c.code} · ${c.farm}/${c.farmBatch}",
             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -42,19 +43,29 @@ fun CompartmentScreen(
 
         FindingSection(c)
 
-        StepCard("① 封签核对（NFC 为权威，手写仅辅助）") {
+        StepCard("① 封签核对（罐口 NFC 扫签自动闭合；NFC 为权威，手写仅辅助）") {
+            if (c.sealNfc != null) {
+                Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Text("罐口 NFC 已核验：$c.sealNfc（装车单期望 ${c.sealExpected ?: "-"}）" +
+                        if (c.sealWritten != null) "；手抄 ${c.sealWritten}" else "",
+                        Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                Text("请把罐口标签贴近设备背部 NFC 读头：扫签即完成封签核验",
+                    style = MaterialTheme.typography.labelMedium)
+            }
             var written by remember { mutableStateOf("") }
             var illegible by remember { mutableStateOf(false) }
             OutlinedTextField(value = written, onValueChange = { written = it },
-                label = { Text("手抄封签号（看不清可留空）") },
+                label = { Text("手抄封签号（看不清可留空，仅辅助）") },
                 isError = illegible, modifier = Modifier.fillMaxWidth())
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Switch(checked = illegible, onCheckedChange = { illegible = it })
                 Text("手写不清")
             }
-            Text("罐口标签请贴近设备背部 NFC 读头自动扫描",
-                style = MaterialTheme.typography.labelSmall)
-            Button(onClick = { onManualSeal(written, illegible) }) { Text("登记手抄封签") }
+            Button(onClick = { onManualSeal(written, illegible) }) { Text("补登手抄封签") }
         }
 
         StepCard("② 温度（BLE 探针稳定值 + 车载记录）") {
@@ -92,40 +103,65 @@ fun CompartmentScreen(
             Button(onClick = { onSensory(normal, note) }) { Text("提交感官") }
         }
 
-        StepCard("④ 搅拌与取样深度") {
+        StepCard("④ 搅拌与取样（深度 + 指定 BLE 采样秤稳定重量）") {
             var sec by remember { mutableStateOf("180") }
             Row {
                 OutlinedTextField(value = sec, onValueChange = { sec = it },
-                    label = { Text("搅拌秒数") }, modifier = Modifier.width(140.dp))
+                    label = { Text("搅拌秒数（开阀硬前置 ≥120s）") },
+                    modifier = Modifier.width(220.dp))
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = { sec.toIntOrNull()?.let(onStir) }) { Text("确认搅拌") }
             }
             var depth by remember { mutableStateOf("50") }
-            var weight by remember { mutableStateOf("200") }
-            var wStable by remember { mutableStateOf(true) }
             OutlinedTextField(value = depth, onValueChange = { depth = it },
                 label = { Text("取样深度 cm（规定液位区间 30-80）") },
                 modifier = Modifier.fillMaxWidth())
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                OutlinedTextField(value = weight, onValueChange = { weight = it },
-                    label = { Text("样重 g（BLE 秤）") }, modifier = Modifier.width(160.dp))
-                Switch(checked = wStable, onCheckedChange = { wStable = it })
-                Text("秤稳定")
+
+            // —— 样品重量链只能来自指定 BLE 采样秤，不提供手工克重输入 ——
+            val grams = scale?.grams
+            val scaleReady = grams != null && scale.stable
+            Surface(
+                color = (if (scaleReady) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.errorContainer)
+                    .copy(alpha = 0.12f),
+                modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(8.dp)) {
+                    if (scale == null) {
+                        Text("未接入指定 BLE 采样秤：取样重量链将缺失并阻断开卸",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error)
+                    } else {
+                        Text("BLE 采样秤 ${scale.deviceId}：" +
+                            (grams?.let { "%.1f g".format(it) } ?: "等待广播…") +
+                            if (scaleReady) "（稳定，可取样）" else "（未稳定，读数不进入判定）",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold)
+                    }
+                }
             }
-            Button(onClick = {
-                onSample(depth.toDoubleOrNull() ?: 0.0,
-                    weight.toDoubleOrNull() ?: 0.0, wStable)
-            }, enabled = c.status.ordinal < 6) { Text("留存卸前个体样") }
+            Button(
+                onClick = { onSample(depth.toDoubleOrNull() ?: 0.0) },
+                enabled = scaleReady,
+            ) { Text("留存卸前个体样（采用秤稳定值）") }
+            if (!scaleReady)
+                Text("按钮在指定秤稳定读数到达前禁用；非指定设备/手工重量一律不入链",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall)
             if (!c.preUnloadSample)
                 Text("缺卸前个体样：系统不会登记开阀", color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.labelMedium)
         }
 
-        StepCard("⑤ 卸奶边界（系统不开阀）") {
+        StepCard("⑤ 卸奶边界（与封签/搅拌/样品同为开阀硬前置；系统不开阀）") {
             var tank by remember { mutableStateOf("T-1") }
             OutlinedTextField(value = tank, onValueChange = { tank = it },
                 label = { Text("目标罐") }, modifier = Modifier.fillMaxWidth())
-            Button(onClick = { onSeparate(tank) }) { Text("声明独立卸入罐") }
+            Row {
+                Button(onClick = { onSeparate(tank) }) { Text("声明独立卸入罐") }
+                Spacer(Modifier.width(8.dp))
+                Text(if (c.boundaryDeclared) "本仓边界已声明" else "本仓尚未声明边界",
+                    style = MaterialTheme.typography.labelMedium)
+            }
             val others = state.compartments.filter { it.code != c.code }.map { it.code }
             val picked = remember { mutableStateListOf<String>() }
             Row(Modifier.horizontalScroll(rememberScrollState())) {
@@ -145,7 +181,8 @@ fun CompartmentScreen(
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = onClose) { Text("关阀完成") }
             }
-            Text("系统只记录人工动作，绝不驱动阀门；存在未决阻断项时拒绝登记开阀。",
+            Text("系统只记录人工动作，绝不驱动阀门；封签/感官/搅拌/卸前样/卸奶边界" +
+                "为同级硬前置，任一缺失即拒绝登记开阀。",
                 style = MaterialTheme.typography.labelSmall)
         }
 

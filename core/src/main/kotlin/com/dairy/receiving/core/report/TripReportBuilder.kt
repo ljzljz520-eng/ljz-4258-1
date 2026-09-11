@@ -62,8 +62,9 @@ object TripReportBuilder {
                     "[${f.code.severity}] ${f.code.name}: ${f.detail}$tag"
                 },
                 samples = c.samples.map { s ->
+                    val w = s.weight?.let { "${it.grams}g@${it.deviceId}/稳定=${it.stable}" } ?: "(无秤重)"
                     "${s.kind}/瓶${s.bottleTag.value}/${s.id.value}@${s.takenAt}" +
-                        " 深度${s.depthCm}cm 量${s.weightG}g 稳定=${s.weightStable}"
+                        " 深度${s.depthCm}cm 量$w"
                 },
                 unloadGroupId = c.unloadGroupId,
             )

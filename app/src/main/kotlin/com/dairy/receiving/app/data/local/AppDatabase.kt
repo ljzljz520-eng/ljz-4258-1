@@ -13,7 +13,7 @@ import androidx.room.withTransaction
         SealEntity::class,
         SampleEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {

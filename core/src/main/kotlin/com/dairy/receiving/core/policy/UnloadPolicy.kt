@@ -65,12 +65,39 @@ object UnloadPolicy {
         return out
     }
 
-    /** 单仓/组分仓进入 READY 前必须逐项确认的硬条件。 */
-    fun compartmentReady(c: Compartment): Boolean {
-        if (c.secondaryLoads.isNotEmpty()) return false
-        if (c.seal == null) return false
-        if (c.sensory == null) return false
-        if (!c.hasPreUnloadSample) return false
-        return true
+    /**
+     * 开阀登记前必须逐项满足的硬前置，任一不满足系统拒绝登记开阀。
+     * 各项为**同等级前置**，返回所有未满足项（一次提示完整，不允许逐项跳过）：
+     *  1. 无途中补装（身份污染即永久挂起）；
+     *  2. 封签已核验；
+     *  3. 感官已检查；
+     *  4. **搅拌已确认且时长达标**（取样代表性前提）；
+     *  5. 卸前个体样已留存（代表性）；
+     *  6. **卸奶边界已声明且本仓属于某个已登记声明**（独立/混合边界必须先于开阀闭合）。
+     */
+    fun openValveBlockers(
+        c: Compartment,
+        cfg: ReceivingPolicyConfig,
+        declaredCompartments: Set<CompartmentCode>,
+    ): List<String> {
+        val missing = mutableListOf<String>()
+        if (c.secondaryLoads.isNotEmpty()) missing += "途中补装未决"
+        if (c.seal == null) missing += "封签未核验"
+        if (c.sensory == null) missing += "感官未检查"
+        if (c.stirringConfirmedAt == null) {
+            missing += "搅拌未确认"
+        } else if ((c.stirringSeconds ?: 0) < cfg.minStirringSeconds) {
+            missing += "搅拌时长不足（${c.stirringSeconds}s < ${cfg.minStirringSeconds}s）"
+        }
+        if (!c.hasPreUnloadSample) missing += "卸前个体样缺失"
+        if (c.code !in declaredCompartments) missing += "卸奶边界未声明（独立/混合）"
+        return missing
     }
+
+    /** 单仓/组分仓进入 READY 前必须逐项确认的硬条件（搅拌与卸奶边界为同等级前置）。 */
+    fun compartmentReady(
+        c: Compartment,
+        cfg: ReceivingPolicyConfig = ReceivingPolicyConfig(),
+        declaredCompartments: Set<CompartmentCode> = emptySet(),
+    ): Boolean = openValveBlockers(c, cfg, declaredCompartments).isEmpty()
 }

@@ -43,7 +43,7 @@ data class SealEntity(
     val checkedAt: String,
 )
 
-/** 样品链：个体样/混合样、来源仓、瓶签、深度、重量与稳定标志、时序。 */
+/** 样品链：个体样/混合样、来源仓、瓶签、深度、重量（含来源设备）与稳定标志、时序。 */
 @Entity(tableName = "samples")
 data class SampleEntity(
     @PrimaryKey val sampleId: String,
@@ -55,6 +55,8 @@ data class SampleEntity(
     val stirringSeconds: Int?,
     val weightG: Double?,
     val weightStable: Boolean,
+    /** 重量来源设备：只有指定 BLE 采样秤的读数才构成合法重量链。 */
+    val weightDeviceId: String?,
     val takenAt: String,
     val takenBy: String,
 )

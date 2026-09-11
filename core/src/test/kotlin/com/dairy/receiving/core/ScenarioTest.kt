@@ -53,6 +53,7 @@ class ScenarioTest {
         c: Compartment, wf: TripWorkflow, clock: MutableClock,
         bottle: String = "B-${c.code.value}", sampleId: String = "SMP-${c.code.value}",
         depth: Double = 50.0, weight: Double = 200.0, weightStable: Boolean = true,
+        weightDevice: String = DEFAULT_SCALE_DEVICE_ID,
         labelBound: Boolean = true,
     ): SampleId {
         val sid = SampleId(sampleId)
@@ -66,7 +67,9 @@ class ScenarioTest {
         stir(c, wf, clock)
         clock.advance(Duration.ofMinutes(1))
         val s = Sample(sid, BottleTagId(bottle), SampleKind.INDIVIDUAL,
-            listOf(c.code), depth, 180, weight, weightStable, clock.instant, op)
+            listOf(c.code), depth, 180,
+            WeightReading(weight, weightStable, clock.instant, weightDevice),
+            clock.instant, op)
         wf.takeSample(c.code, s)
         return sid
     }
@@ -189,7 +192,9 @@ class ScenarioTest {
         val start = arrival.plus(Duration.ofMinutes(10))
         val c = comp("3").copy(unloadStartedAt = start)
         val late = Sample(SampleId("SMP-3L"), BottleTagId("B-3"), SampleKind.INDIVIDUAL,
-            listOf(c.code), 50.0, 180, 200.0, true,
+            listOf(c.code), 50.0, 180,
+            WeightReading(200.0, true, start.plus(Duration.ofMinutes(5)),
+                DEFAULT_SCALE_DEVICE_ID),
             start.plus(Duration.ofMinutes(5)), op)
         val findings = SamplingPolicy.evaluate(
             c.copy(samples = listOf(late)),
@@ -222,7 +227,7 @@ class ScenarioTest {
         // 尝试混合卸载 -> 身份保持条件不满足，声明被拒
         clock.advance(Duration.ofMinutes(2))
         val cs = Sample(SampleId("SMP-MIX"), BottleTagId("B-MIX"), SampleKind.COMPOSITE,
-            listOf(a.code, b.code), null, null, 500.0, true, clock.instant, op)
+            listOf(a.code, b.code), null, null, null, clock.instant, op)
         wf.bindBottle(BottleTagId("B-MIX"), cs.id)
         wf.registerCompositeSample(cs)
         val decl = UnloadDeclaration("g1", listOf(a.code, b.code),
@@ -279,7 +284,7 @@ class ScenarioTest {
 
         clock.advance(Duration.ofMinutes(3))
         val cs = Sample(SampleId("SMP-MIX6"), BottleTagId("B-MIX6"), SampleKind.COMPOSITE,
-            listOf(a.code, b.code), null, null, 500.0, true, clock.instant, op)
+            listOf(a.code, b.code), null, null, null, clock.instant, op)
         wf.bindBottle(BottleTagId("B-MIX6"), cs.id)
         wf.registerCompositeSample(cs)
         val decl = UnloadDeclaration("g6", listOf(a.code, b.code),
@@ -339,5 +344,184 @@ class ScenarioTest {
         assertFalse(after.open)
         assertEquals(sup, after.overriddenBy?.supervisor)
         assertTrue(wf.events.any { it.action == "SUPERVISOR_OVERRIDE" })
+    }
+
+    // ---- 修复 1：样品重量链只能由指定 BLE 采样秤产生 ---------------------------
+
+    private fun readyNoSample(
+        code: String, clock: MutableClock,
+        expected: String = "S-A-$code",
+    ): Pair<Compartment, TripWorkflow> {
+        val c = comp(code)
+        val wf = TripWorkflow(TripId("t-$code"), TruckId("豫M-$code"), listOf(c),
+            clock = clock)
+        // 装车预报绑定（期望封签）
+        wf.registerNfcBinding(ExpectedSealBinding(c.code, SealId(expected),
+            c.farm, c.farmBatch, t0, NfcTagId("tag-$code")))
+        // 罐口 NFC 扫签直接闭合封签核验（见修复 2 的用例）
+        wf.scanHatchTag(c.code, c.farm, c.farmBatch, SealId(expected),
+            NfcTagId("tag-$code"), op)
+        wf.recordProbe(c.code, probeGood(code))
+        wf.sensory(c.code, SensoryCheck(true, "正常", op, clock.instant))
+        wf.confirmStirring(c.code, 180, op)
+        return c to wf
+    }
+
+    private fun individualSample(
+        c: Compartment, at: Instant, grams: Double?, stable: Boolean = true,
+        device: String = DEFAULT_SCALE_DEVICE_ID,
+    ) = Sample(SampleId("SMP-${c.code.value}-x"), BottleTagId("B-${c.code.value}"),
+        SampleKind.INDIVIDUAL, listOf(c.code), 50.0, 180,
+        grams?.let { WeightReading(it, stable, at, device) }, at, op)
+
+    @Test
+    fun `9a 重量来自非指定BLE设备 - 重量链阻断且拒绝登记开阀`() {
+        val clock = MutableClock(arrival)
+        val (c, wf) = readyNoSample("9A", clock)
+        val s = individualSample(c, clock.instant, grams = 200.0,
+            device = "ble-scale-UNKNOWN")
+        wf.bindBottle(s.bottleTag, s.id); wf.takeSample(c.code, s)
+        wf.declareUnload(UnloadDeclaration("g-9A", listOf(c.code),
+            UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+
+        assertTrue(wf.openBlockings(c.code).any {
+            it.code == FindingCode.SAMPLE_WEIGHT_WRONG_DEVICE
+        }, "非指定采样秤的重量必须阻断")
+        val r = wf.confirmValveOpened(c.code, op)
+        assertFalse(r.accepted)
+    }
+
+    @Test
+    fun `9b 没有采样秤读数 - 判重量链缺失阻断（手工克重无入口）`() {
+        val clock = MutableClock(arrival)
+        val (c, wf) = readyNoSample("9B", clock)
+        val s = individualSample(c, clock.instant, grams = null) // 无秤读数
+        wf.bindBottle(s.bottleTag, s.id); wf.takeSample(c.code, s)
+
+        assertTrue(wf.findingsFor(c.code).any { it.code == FindingCode.SAMPLE_WEIGHT_MISSING })
+        assertTrue(wf.openBlockings(c.code).any { it.code == FindingCode.SAMPLE_WEIGHT_MISSING })
+    }
+
+    @Test
+    fun `9c 指定秤稳定读数 - 重量链成立可开阀；未稳定读数仅警告且不得开阀`() {
+        val clock = MutableClock(arrival)
+        val (c, wf) = readyNoSample("9C", clock)
+        val good = individualSample(c, clock.instant, grams = 200.0,
+            device = DEFAULT_SCALE_DEVICE_ID)
+        wf.bindBottle(good.bottleTag, good.id); wf.takeSample(c.code, good)
+        wf.declareUnload(UnloadDeclaration("g-9C", listOf(c.code),
+            UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+        assertFalse(wf.findingsFor(c.code).any {
+            it.code in setOf(FindingCode.SAMPLE_WEIGHT_MISSING,
+                FindingCode.SAMPLE_WEIGHT_WRONG_DEVICE)
+        })
+        assertTrue(wf.confirmValveOpened(c.code, op).accepted)
+
+        // 同一读数若未稳定：只是警告级缺陷（不自动拒收），但重量链判定仍以 stable 为准
+        val wobbly = WeightReading(200.0, false, clock.instant, DEFAULT_SCALE_DEVICE_ID)
+        assertTrue(
+            SamplingPolicy.evaluate(
+                c.copy(samples = listOf(good.copy(weight = wobbly))),
+                mapOf(good.bottleTag to good.id),
+                ReceivingPolicyConfig(), clock.instant,
+            ).any { it.code == FindingCode.SAMPLE_WEIGHT_UNSTABLE && !it.code.blocking })
+    }
+
+    // ---- 修复 2：罐口 NFC 扫签闭合到封签核验 ------------------------------------
+
+    @Test
+    fun `10a 罐口NFC身份与签号相符 - 扫签即完成封签核验`() {
+        val clock = MutableClock(arrival)
+        val c = comp("10")
+        val wf = TripWorkflow(TripId("t10"), TruckId("豫M-010"), listOf(c), clock = clock)
+        wf.registerNfcBinding(ExpectedSealBinding(c.code, SealId("S-A-10"),
+            c.farm, c.farmBatch, t0, NfcTagId("tag-10")))
+
+        wf.scanHatchTag(c.code, c.farm, c.farmBatch, SealId("S-A-10"),
+            NfcTagId("tag-10"), op)
+
+        val seal = wf.compartments[c.code]!!.seal
+        assertNotNull(seal, "罐口扫签必须直接形成 SealCheck，闭合封签核验")
+        assertEquals(SealId("S-A-10"), seal!!.nfc)
+        assertFalse(wf.findingsFor(c.code).any {
+            it.code in setOf(FindingCode.SEAL_MISMATCH, FindingCode.SEAL_UNVERIFIED,
+                FindingCode.SEAL_TEXT_MISMATCH, FindingCode.FARM_MISMATCH)
+        }, "身份/签号相符时不得产生封签类阻断")
+        assertTrue(wf.events.any {
+            it.action == "HATCH_TAG_SCANNED" && it.detail.contains("封签核验")
+        })
+    }
+
+    @Test
+    fun `10b 罐口NFC签号与装车预报不符 - 扫签即判换签阻断`() {
+        val clock = MutableClock(arrival)
+        val c = comp("10")
+        val wf = TripWorkflow(TripId("t10"), TruckId("豫M-010"), listOf(c), clock = clock)
+        // 预报期望 S-A-10，标签却携带 S-FORGED
+        wf.registerNfcBinding(ExpectedSealBinding(c.code, SealId("S-A-10"),
+            c.farm, c.farmBatch, t0, NfcTagId("tag-10")))
+        wf.scanHatchTag(c.code, c.farm, c.farmBatch, SealId("S-FORGED"),
+            NfcTagId("tag-10"), op)
+        assertTrue(wf.openBlockings(c.code).any { it.code == FindingCode.SEAL_MISMATCH })
+    }
+
+    @Test
+    fun `10c 身份不符的罐口签 - 不产生封签核验仅挂起补装`() {
+        val clock = MutableClock(arrival)
+        val c = comp("10")
+        val wf = TripWorkflow(TripId("t10"), TruckId("豫M-010"), listOf(c), clock = clock)
+        wf.registerNfcBinding(ExpectedSealBinding(c.code, SealId("S-A-10"),
+            c.farm, c.farmBatch, t0, NfcTagId("tag-10")))
+        wf.scanHatchTag(c.code, FarmId("牧场C"), FarmBatchId("C-X"),
+            SealId("S-C-1"), NfcTagId("tag-x"), op)
+        assertNull(wf.compartments[c.code]!!.seal, "身份污染的签不得形成封签核验")
+        assertTrue(wf.openBlockings(c.code).any { it.code == FindingCode.RELOAD_DETECTED })
+    }
+
+    // ---- 修复 3：搅拌与卸奶边界是开阀同级硬前置 ---------------------------------
+
+    @Test
+    fun `11a 未确认搅拌 - 拒绝登记开阀`() {
+        val clock = MutableClock(arrival)
+        val c = comp("11")
+        val wf = TripWorkflow(TripId("t11"), TruckId("豫M-011"), listOf(c), clock = clock)
+        wf.verifySeal(c.code, sealOk("11"))
+        wf.recordProbe(c.code, probeGood("11"))
+        wf.sensory(c.code, SensoryCheck(true, "正常", op, arrival))
+        // 故意不搅拌
+        val sid = SampleId("SMP-11")
+        wf.bindBottle(BottleTagId("B-11"), sid)
+        wf.takeSample(c.code, Sample(sid, BottleTagId("B-11"), SampleKind.INDIVIDUAL,
+            listOf(c.code), 50.0, null,
+            WeightReading(200.0, true, clock.instant, DEFAULT_SCALE_DEVICE_ID),
+            clock.instant, op))
+        wf.declareUnload(UnloadDeclaration("g-11", listOf(c.code),
+            UnloadBoundary.SEPARATE, TankId("T-1"), null, op, clock.instant))
+
+        val r = wf.confirmValveOpened(c.code, op)
+        assertFalse(r.accepted)
+        assertTrue(r.message.contains("搅拌"))
+    }
+
+    @Test
+    fun `11b 未声明卸奶边界 - 拒绝登记开阀，边界与其他前置同级`() {
+        val clock = MutableClock(arrival)
+        val c = comp("11")
+        val wf = TripWorkflow(TripId("t11"), TruckId("豫M-011"), listOf(c), clock = clock)
+        // 封签/探针/感官/搅拌/卸前样齐备，唯独不声明卸奶边界
+        fullPrep(c, wf, clock, bottle = "B-11", sampleId = "SMP-11")
+        val r = wf.confirmValveOpened(c.code, op)
+        assertFalse(r.accepted)
+        assertTrue(r.message.contains("卸奶边界"))
+    }
+
+    @Test
+    fun `11c 搅拌与边界等前置全部闭合 - 允许登记人工开阀`() {
+        val clock = MutableClock(arrival)
+        val c = comp("11")
+        val wf = TripWorkflow(TripId("t11"), TruckId("豫M-011"), listOf(c), clock = clock)
+        fullPrep(c, wf, clock, bottle = "B-11", sampleId = "SMP-11")
+        declareSeparate(wf, c, clock)
+        assertTrue(wf.confirmValveOpened(c.code, op).accepted)
     }
 }

@@ -83,8 +83,9 @@ class RoomTripStore(private val db: AppDatabase) : TripStore {
         sourceCompartments = sourceCompartments.joinToString(",") { it.value },
         depthCm = depthCm,
         stirringSeconds = stirringSeconds,
-        weightG = weightG,
-        weightStable = weightStable,
+        weightG = weight?.grams,
+        weightStable = weight?.stable == true,
+        weightDeviceId = weight?.deviceId,
         takenAt = takenAt.toString(),
         takenBy = takenBy.value,
     )

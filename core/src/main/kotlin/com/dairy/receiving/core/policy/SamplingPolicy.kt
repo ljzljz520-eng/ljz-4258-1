@@ -5,8 +5,9 @@ import java.time.Instant
 
 /**
  * 取样代表性规则：
- *  - 搅拌时长不足 -> 警告
- *  - 深度越界 / 秤未稳定 -> 警告
+ *  - 搅拌时长不足 -> 警告（开卸前为硬前置，见 UnloadPolicy.openValveBlockers）
+ *  - 深度越界 / 秤未稳定/样量不足 -> 警告
+ *  - 样重缺失或不是指定 BLE 采样秤产生 -> 阻断（重量链不成立）
  *  - 样瓶标签与所绑仓不符（混样贴错）-> 阻断
  *  - 卸奶开始后才取个体样（先卸后取）-> 阻断
  */
@@ -54,14 +55,24 @@ object SamplingPolicy {
                                 "${cfg.sampleDepthMinCm}-${cfg.sampleDepthMaxCm}cm")
                     }
                 }
-                s.weightG?.let { w ->
-                    if (!s.weightStable) {
+                // —— 样品重量链：必须来自指定 BLE 采样秤 ——
+                val w = s.weight
+                when {
+                    w == null ->
+                        out += f(FindingCode.SAMPLE_WEIGHT_MISSING,
+                            "仓${c.code.value}: 个体样 ${s.id.value} 无采样秤读数，" +
+                                "重量链只能由指定 BLE 设备 ${cfg.designatedScaleDeviceId} 产生")
+                    w.deviceId != cfg.designatedScaleDeviceId ->
+                        out += f(FindingCode.SAMPLE_WEIGHT_WRONG_DEVICE,
+                            "仓${c.code.value}: 个体样 ${s.id.value} 重量来自设备 " +
+                                "${w.deviceId}，非指定采样秤 ${cfg.designatedScaleDeviceId}")
+                    !w.stable ->
                         out += f(FindingCode.SAMPLE_WEIGHT_UNSTABLE,
-                            "仓${c.code.value}: 采样秤读数未稳定（${w}g）")
-                    } else if (w < cfg.minSampleWeightG) {
+                            "仓${c.code.value}: 采样秤 ${w.deviceId} 读数未稳定（${w.grams}g）")
+                    w.grams < cfg.minSampleWeightG ->
                         out += f(FindingCode.SAMPLE_WEIGHT_UNSTABLE,
-                            "仓${c.code.value}: 样量 ${w}g < ${cfg.minSampleWeightG}g")
-                    }
+                            "仓${c.code.value}: 样量 ${w.grams}g < ${cfg.minSampleWeightG}g" +
+                                "（设备 ${w.deviceId}）")
                 }
             }
         }
