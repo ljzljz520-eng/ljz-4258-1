@@ -1,0 +1,12 @@
+{
+  "name": "原奶收货协同平台",
+  "short_name": "原奶收货",
+  "description": "分仓采样、交接、实验室结论与放行核对",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7faf7",
+  "theme_color": "#166534",
+  "icons": [
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

@@ -1,0 +1,34 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: milk
+          POSTGRES_PASSWORD: milk
+          POSTGRES_DB: milk_receipt_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U milk -d milk_receipt_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install -r backend/requirements.txt
+      - name: Backend tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://milk:milk@localhost:5432/milk_receipt_test
+        run: pytest -q
+      - uses: actions/setup-node@v4
+        with: {node-version: '20'}
+      - name: Frontend build
+        working-directory: frontend
+        run: npm install && npm run build
